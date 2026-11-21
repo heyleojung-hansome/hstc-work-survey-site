@@ -45,8 +45,9 @@ var Api = (function () {
       var p = { action: 'start', branch: branch, name: name };
       return APP_CONFIG.MOCK ? mockCall(MockServer.start, p) : request('POST', p);
     },
-    submit: function (token, answers) {
-      var p = { action: 'submit', token: token, answers: answers, version: SURVEY_DEF.version };
+    // roundId·version: 응답자가 본 회차와 정의 버전(서버가 다르면 '문항 갱신' 안내)
+    submit: function (token, answers, roundId, version) {
+      var p = { action: 'submit', token: token, answers: answers, roundId: roundId, version: version };
       return APP_CONFIG.MOCK ? mockCall(MockServer.submit, p) : request('POST', p);
     },
 

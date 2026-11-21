@@ -54,7 +54,8 @@ var Dom = (function () {
     check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
     alert: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v6M12 16.5v.01"/>',
     send: '<path d="M4 12l16-8-6 16-2.5-6.5L4 12z"/>',
-    pause: '<circle cx="12" cy="12" r="9"/><path d="M10 9v6M14 9v6"/>'
+    pause: '<circle cx="12" cy="12" r="9"/><path d="M10 9v6M14 9v6"/>',
+    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.5v.01"/>'
   };
 
   function icon(name, size, strokeWidth) {

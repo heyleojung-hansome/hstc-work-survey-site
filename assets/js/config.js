@@ -14,8 +14,15 @@ var APP_CONFIG = {
   MOCK_DELAY_MS: 450
 };
 
-// 로컬 개발용 MOCK 전환 (배포된 주소에서는 동작하지 않는다)
+// 개발용 서버(가짜 데이터) 웹앱 — 로컬에서 ?api=dev 로만 쓴다
+APP_CONFIG.DEV_API_URL = 'https://script.google.com/macros/s/AKfycbwRW2dMHVFaVSCN36TdT7iTxU-9hQ47QhMzhlmWzUvhjR3D86Zygbu21I_q79RbkCzJtA/exec';
+
+// 로컬 개발용 전환 (배포된 주소에서는 동작하지 않는다)
+//   ?mock=1  → MOCK(서버 없이)
+//   ?api=dev → 개발용 서버
 (function () {
   var local = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
-  if (local && new URLSearchParams(location.search).get('mock')) APP_CONFIG.MOCK = true;
+  var q = new URLSearchParams(location.search);
+  if (local && q.get('mock')) APP_CONFIG.MOCK = true;
+  if (local && q.get('api') === 'dev') APP_CONFIG.API_URL = APP_CONFIG.DEV_API_URL;
 })();

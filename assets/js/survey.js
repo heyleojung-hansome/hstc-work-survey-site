@@ -2,10 +2,15 @@
  * 설문 화면 진행 — 상태 관리, 화면 전환, 키보드 조작, 임시 저장.
  *
  * 임시 저장(sessionStorage): 새로고침해도 진행 내용이 남도록 토큰·응답·현재 단계만 저장한다.
- * 이름은 저장하지 않는다. 제출에 성공하면 바로 지운다.
+ * 이름은 저장하지 않는다. 제출에 성공하면 바로 지운다. 회차·정의 버전이 바뀌면 임시 저장은 버린다.
+ *
+ * 문항은 서버가 내려주는 진행 중 회차의 정의(status.definition)로 그린다(state.def, state.logic).
+ * 미리보기(?preview=1): 편집기가 localStorage에 넣어 둔 초안으로 그리고, 서버에 아무것도 보내지 않는다.
  */
 (function () {
   var STORE_KEY = 'hstc_survey_progress';
+  var PREVIEW_KEY = 'hstc_preview_def';   // 편집기 미리보기 초안 (문항만, 개인 정보 없음)
+  var PREVIEW = new URLSearchParams(location.search).get('preview') === '1';
   var AUTO_ADVANCE_MS = 260;   // 단일 선택 후 다음으로 넘어가기까지
   var TWO_DIGIT_WAIT_MS = 450; // 선택지가 10개 이상일 때 두 자리 숫자 입력 대기
 
@@ -14,6 +19,11 @@
   var state = {
     screen: 'loading',   // loading | start | closed | error | question | confirm | done
     status: null,
+    def: null,           // 진행 중 회차(또는 미리보기 초안)의 설문 정의
+    logic: null,         // createSurveyLogic(def)
+    roundId: '',
+    branches: [],
+    preview: PREVIEW,
     token: null,
     answers: {},
     steps: [],
@@ -35,8 +45,10 @@
   /* ── 임시 저장 ── */
   function save() {
     if (state.screen !== 'question' && state.screen !== 'confirm') return;
+    if (state.preview) return; // 미리보기는 저장하지 않는다
     var data = {
-      v: SURVEY_DEF.version,
+      round: state.roundId,
+      v: state.def.version,
       token: state.token,
       answers: state.answers,
       stepKey: state.screen === 'confirm' ? '__confirm' : currentStep().key
@@ -47,7 +59,7 @@
   function load() {
     try {
       var data = JSON.parse(sessionStorage.getItem(STORE_KEY) || 'null');
-      if (data && data.v === SURVEY_DEF.version && data.answers) return data;
+      if (data && data.round === state.roundId && data.v === state.def.version && data.answers) return data;
     } catch (e) { /* 무시 */ }
     return null;
   }
@@ -59,7 +71,7 @@
   /* ── 단계 ── */
   function refreshSteps() {
     var key = state.steps.length ? currentStep().key : null;
-    state.steps = SurveyLogic.buildSteps(state.answers);
+    state.steps = state.logic.buildSteps(state.answers);
     if (key) {
       var i = indexOfKey(key);
       if (i !== -1) state.stepIndex = i;
@@ -72,14 +84,14 @@
   }
 
   function currentStep() { return state.steps[state.stepIndex]; }
-  function currentQuestion() { return SurveyLogic.findQuestion(currentStep().qid); }
+  function currentQuestion() { return state.logic.findQuestion(currentStep().qid); }
 
   // 처음으로 답이 안 된 단계. 모두 답했으면 -1.
   function firstUnanswered() {
     for (var i = 0; i < state.steps.length; i++) {
-      var q = SurveyLogic.findQuestion(state.steps[i].qid);
+      var q = state.logic.findQuestion(state.steps[i].qid);
       if (!q.required) continue;
-      if (SurveyLogic.checkStep(state.steps[i], state.answers) !== null) return i;
+      if (state.logic.checkStep(state.steps[i], state.answers) !== null) return i;
     }
     return -1;
   }
@@ -142,7 +154,12 @@
 
     startSurvey: function () {
       if (state.busy) return;
-      var name = SurveyLogic.normalizeName(state.name);
+      if (state.preview) {
+        state.token = 'preview';
+        state.steps = state.logic.buildSteps(state.answers);
+        return goStep(0, 'forward');
+      }
+      var name = state.logic.normalizeName(state.name);
       if (!state.branch) { state.startError = '소속을 선택해 주세요.'; return rerender(); }
       if (!name) { state.startError = '이름을 입력해 주세요.'; return rerender(); }
       state.busy = true;
@@ -154,7 +171,7 @@
         state.token = res.data.token;
         state.name = '';
         // 이전에 작성하던 응답이 있으면 이어서(토큰 만료 후 다시 시작한 경우 등)
-        state.steps = SurveyLogic.buildSteps(state.answers);
+        state.steps = state.logic.buildSteps(state.answers);
         var next = firstUnanswered();
         if (next === -1 && Object.keys(state.answers).length) return goTo('confirm');
         goStep(next === -1 ? 0 : next, 'forward');
@@ -168,12 +185,12 @@
       state.flash = '';
 
       if (q.type === 'multi') {
-        var r = SurveyLogic.toggleMulti(q, state.answers[q.id], value);
+        var r = state.logic.toggleMulti(q, state.answers[q.id], value);
         if (r.error) { state.flash = r.error; return rerender(); }
         state.answers[q.id] = r.values;
         save();
         rerender();
-        var etc = SurveyLogic.etcOption(q);
+        var etc = state.logic.etcOption(q);
         if (etc && value === etc.value && r.values.indexOf(value) !== -1) focusEtc();
         return;
       }
@@ -189,7 +206,7 @@
       save();
       rerender();
 
-      var opt = q.options ? SurveyLogic.findOption(q, value) : null;
+      var opt = q.options ? state.logic.findOption(q, value) : null;
       if (opt && opt.etc) { focusEtc(); return; }
       clearTimeout(advanceTimer);
       advanceTimer = setTimeout(act.next, AUTO_ADVANCE_MS);
@@ -197,7 +214,7 @@
 
     setEtc: function (v) {
       var q = currentQuestion();
-      state.answers[SurveyLogic.etcKey(q)] = v;
+      state.answers[state.logic.etcKey(q)] = v;
       if (state.flash) { state.flash = ''; rerender(); }
       save();
     },
@@ -208,7 +225,7 @@
       state.answers[q.id] = v;
       save();
       // 글자 수와 [건너뛰기]↔[다음] 버튼만 갱신한다(입력란을 다시 그리지 않음).
-      var max = SURVEY_DEF.textMaxLength;
+      var max = state.def.textMaxLength;
       var cnt = document.getElementById('char-count');
       if (cnt) {
         cnt.textContent = v.length.toLocaleString() + ' / ' + max.toLocaleString();
@@ -226,7 +243,7 @@
     next: function () {
       clearTimeout(advanceTimer);
       if (state.screen !== 'question') return;
-      var err = SurveyLogic.checkStep(currentStep(), state.answers);
+      var err = state.logic.checkStep(currentStep(), state.answers);
       if (err) {
         state.flash = err;
         rerender();
@@ -245,12 +262,17 @@
 
     submit: function () {
       if (state.busy) return;
-      var v = SurveyLogic.validateAnswers(state.answers);
+      var v = state.logic.validateAnswers(state.answers);
       if (!v.ok) { state.submitError = v.error; return rerender(); }
+      if (state.preview) {
+        state.answers = {};
+        state.screen = 'done';
+        return render('fade');
+      }
       state.busy = true;
       state.submitError = '';
       rerender();
-      Api.submit(state.token, v.data).then(function (res) {
+      Api.submit(state.token, v.data, state.roundId, state.def.version).then(function (res) {
         state.busy = false;
         if (!res.ok) { state.submitError = res.error; return rerender(); }
         clearSaved();
@@ -267,7 +289,7 @@
       state.submitError = '';
       clearSaved();
       try {
-        sessionStorage.setItem(STORE_KEY, JSON.stringify({ v: SURVEY_DEF.version, token: null, answers: state.answers, stepKey: null }));
+        sessionStorage.setItem(STORE_KEY, JSON.stringify({ round: state.roundId, v: state.def.version, token: null, answers: state.answers, stepKey: null }));
       } catch (e) { /* 무시 */ }
       state.screen = 'start';
       render('fade');
@@ -308,7 +330,7 @@
 
     if (q.type === 'scale' || q.type === 'grid') {
       var n = Number(e.key);
-      if (q.type === 'grid' && n === 0) return act.choose(q.na.value);
+      if (q.type === 'grid' && n === 0) return q.na ? act.choose(q.na.value) : undefined;
       if (n >= q.min && n <= q.max) act.choose(n);
       return;
     }
@@ -334,8 +356,39 @@
   }
 
   /* ── 시작 ── */
+  // 설문 정의를 받아 화면 상태에 넣는다
+  function useDefinition(def, data) {
+    state.def = def;
+    state.logic = createSurveyLogic(def);
+    state.roundId = data.round ? data.round.id : '';
+    state.branches = data.branches || [];
+    document.title = def.title + ' | HSTC 중고차사업부';
+  }
+
+  // 미리보기 초안: 편집기가 { definition, meta: { startDate, endDate, shareMonth }, branches }로 넣어 둔다
+  function loadPreview() {
+    try {
+      var p = JSON.parse(localStorage.getItem(PREVIEW_KEY) || 'null');
+      if (p && p.definition && p.definition.questions) return p;
+    } catch (e) { /* 무시 */ }
+    return null;
+  }
+
   function init() {
     render('fade');
+    if (state.preview) {
+      var p = loadPreview();
+      if (!p) {
+        state.loadError = '미리볼 설문이 없습니다. 관리자 화면 [설문 편집]에서 [미리보기]를 눌러 열어 주세요.';
+        state.screen = 'error';
+        return render('fade');
+      }
+      var meta = p.meta || {};
+      state.status = { state: 'open', startDate: meta.startDate || '', endDate: meta.endDate || '', shareMonth: meta.shareMonth || '' };
+      useDefinition(p.definition, { round: { id: 'preview' }, branches: p.branches || [] });
+      state.screen = 'start';
+      return render('fade');
+    }
     Api.status().then(function (res) {
       if (!res.ok) {
         state.loadError = res.error;
@@ -343,14 +396,15 @@
         return render('fade');
       }
       state.status = res.data;
-      if (res.data.state !== 'open') {
+      if (res.data.state !== 'open' || !res.data.definition) {
         state.screen = 'closed';
         return render('fade');
       }
+      useDefinition(res.data.definition, res.data);
       var saved = load();
       if (saved) {
         state.answers = saved.answers || {};
-        state.steps = SurveyLogic.buildSteps(state.answers);
+        state.steps = state.logic.buildSteps(state.answers);
         if (saved.token) {
           state.token = saved.token;
           if (saved.stepKey === '__confirm') return goTo('confirm');

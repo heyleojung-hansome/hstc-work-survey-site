@@ -170,6 +170,7 @@ var SURVEY_DEF = (function () {
   ];
 
   return {
+    title: '업무환경·프로세스 개선 설문',
     version: VERSION,
     textMaxLength: 2000, // 주관식·기타 입력 최대 글자 수
     branches: ['죽전', '하남', '천안', '운영팀'],
@@ -199,7 +200,9 @@ var SURVEY_DEF = (function () {
       },
       done: '응답해 주셔서 감사합니다. 결과와 개선 계획은 ○월 중 공유하겠습니다.'
     },
-    questions: questions
+    questions: questions,
+    // 결과 분석 설정: 그룹 필터 문항(직군), 교차표(가장 큰 어려움 × 원인), 높은 점수 기준(4~5점)
+    analysis: { groupBy: 'Q1', crosstabs: [['Q5', 'Q6']], highThreshold: 4 }
   };
 })();
 

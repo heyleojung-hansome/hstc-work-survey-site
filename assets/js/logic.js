@@ -9,12 +9,13 @@
  *   기타 입력:     '<문항ID>_etc' 문자열 예) answers.Q6_etc = '...'
  *   text:         문자열              예) answers.Q12 = '...'
  */
-var SurveyLogic = (function () {
-  function getDef() {
-    // 브라우저·GAS에서는 전역, Node에서는 require로 읽는다.
-    if (typeof SURVEY_DEF !== 'undefined') return SURVEY_DEF;
-    return require('./questions.js');
-  }
+/*
+ * createSurveyLogic(def): 설문 정의(def)를 받아 그 정의에 맞는 로직 묶음을 만든다.
+ * 회차마다 정의가 다르므로 서버·화면은 회차 정의로 로직을 만들어 쓴다.
+ * SurveyLogic은 기본 템플릿(questions.js의 SURVEY_DEF)으로 만든 것이다.
+ */
+function createSurveyLogic(def) {
+  function getDef() { return def; }
 
   function findQuestion(id) {
     var list = getDef().questions;
@@ -209,7 +210,7 @@ var SurveyLogic = (function () {
       } else if (q.type === 'grid') {
         if (!Array.isArray(v) || v.length !== q.items.length) return fail(label + '의 모든 항목에 답해 주세요.');
         for (var j = 0; j < v.length; j++) {
-          var ok = isInt(v[j]) && ((v[j] >= q.min && v[j] <= q.max) || v[j] === q.na.value);
+          var ok = isInt(v[j]) && ((v[j] >= q.min && v[j] <= q.max) || (!!q.na && v[j] === q.na.value));
           if (!ok) return fail(label + '의 모든 항목에 답해 주세요.');
         }
         clean[q.id] = v.slice();
@@ -260,7 +261,7 @@ var SurveyLogic = (function () {
       var title = q.id + '. ' + q.title;
       if (q.type === 'grid') {
         q.items.forEach(function (it, i) {
-          rows.push([q.id + '_' + (i + 1), title + ' — ' + it, q.min + '~' + q.max + ', ' + q.na.value, scaleDesc(q) + ', ' + q.na.value + ' = ' + q.na.label]);
+          rows.push([q.id + '_' + (i + 1), title + ' — ' + it, q.min + '~' + q.max + (q.na ? ', ' + q.na.value : ''), scaleDesc(q) + (q.na ? ', ' + q.na.value + ' = ' + q.na.label : '')]);
         });
       } else if (q.type === 'scale') {
         rows.push([q.id, title, q.min + '~' + q.max, scaleDesc(q)]);
@@ -302,8 +303,18 @@ var SurveyLogic = (function () {
     nameKey: nameKey,
     responseColumns: responseColumns,
     answersToCells: answersToCells,
-    codeTableRows: codeTableRows
+    codeTableRows: codeTableRows,
+    def: def
   };
-})();
+}
 
-if (typeof module !== 'undefined' && module.exports) module.exports = SurveyLogic;
+// 기본 템플릿 정의로 만든 로직(브라우저: 전역 SURVEY_DEF, Node: require).
+// GAS는 파일을 불러오는 순서가 정해져 있지 않아 여기서 null일 수 있다 — 서버 코드는 SurveyLogic을 쓰지 말고
+// 회차 정의로 createSurveyLogic(def)를 만들어 쓴다.
+var SurveyLogic = typeof SURVEY_DEF !== 'undefined' ? createSurveyLogic(SURVEY_DEF)
+  : (typeof module !== 'undefined' && typeof require === 'function' ? createSurveyLogic(require('./questions.js')) : null);
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = SurveyLogic;
+  module.exports.createSurveyLogic = createSurveyLogic;
+}

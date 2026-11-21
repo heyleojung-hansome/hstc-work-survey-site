@@ -5,9 +5,19 @@
 var Views = (function () {
   var h = Dom.h;
   var icon = Dom.icon;
-  var DEF = SURVEY_DEF;
-  var TITLE = '업무환경·프로세스 개선 설문';
+  // 화면은 state.def(진행 중 회차의 설문 정의)와 state.logic(그 정의로 만든 로직)으로 그린다.
   var INTRO_ICONS = { time: 'clock', period: 'calendar', anonymity: 'lock', scope: 'eye', share: 'megaphone' };
+  // 편집기에서 만든 안내 항목은 key가 없을 수 있어 라벨로 아이콘을 고른다
+  function introIcon(it) {
+    if (it.key && INTRO_ICONS[it.key]) return INTRO_ICONS[it.key];
+    var l = it.label || '';
+    if (/시간/.test(l)) return 'clock';
+    if (/기간|일정|날짜/.test(l)) return 'calendar';
+    if (/익명|보안|개인/.test(l)) return 'lock';
+    if (/열람|공개|범위/.test(l)) return 'eye';
+    if (/공유|결과|안내/.test(l)) return 'megaphone';
+    return 'info';
+  }
   var WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
 
   function wordmark() {
@@ -22,8 +32,12 @@ var Views = (function () {
     return Number(m[2]) + '월 ' + Number(m[3]) + '일(' + WEEKDAYS[d.getDay()] + ')';
   }
 
+  // 시작·종료가 다른 해면 연도를 붙인다: '2026년 11월 21일(토) ~ 2027년 1월 8일(금)'
   function periodText(status) {
     if (!status || !status.startDate || !status.endDate) return '';
+    var y1 = status.startDate.slice(0, 4);
+    var y2 = status.endDate.slice(0, 4);
+    if (y1 !== y2) return y1 + '년 ' + formatDate(status.startDate) + ' ~ ' + y2 + '년 ' + formatDate(status.endDate);
     return formatDate(status.startDate) + ' ~ ' + formatDate(status.endDate);
   }
 
@@ -35,11 +49,19 @@ var Views = (function () {
   var PERIOD_PLACEHOLDER = '○월 ○일(○) ~ ○월 ○일(○)';
   var SHARE_PLACEHOLDER = '○월 중';
   function fillText(text, status) {
-    var out = text;
+    var out = text || '';
     var period = periodText(status);
-    if (period) out = out.split(PERIOD_PLACEHOLDER).join(period);
-    if (status && status.shareMonth) out = out.split(SHARE_PLACEHOLDER).join(status.shareMonth + ' 중');
+    if (period) out = out.split(PERIOD_PLACEHOLDER).join(period).split('{기간}').join(period);
+    if (status && status.shareMonth) {
+      out = out.split(SHARE_PLACEHOLDER).join(status.shareMonth + ' 중').split('{공유월}').join(status.shareMonth);
+    }
     return out;
+  }
+
+  // 미리보기 모드 표시 (편집기에서 연 화면)
+  function previewBar(state) {
+    if (!state.preview) return null;
+    return h('div', { class: 'preview-bar', role: 'note' }, [icon('eye', 16), '미리보기 — 응답은 저장되지 않습니다']);
   }
 
   function notice(msg) {
@@ -51,12 +73,12 @@ var Views = (function () {
 
   /* ── 시작 화면 ── */
   function start(state, act) {
-    var intro = DEF.texts.intro;
+    var intro = state.def.texts.intro;
     var form = h('form', { class: 'start-form', novalidate: true, onsubmit: function (e) { e.preventDefault(); act.startSurvey(); } }, [
       h('div', null, [
         h('span', { class: 'field-label', id: 'branch-label' }, '소속'),
         h('div', { class: 'branch-grid', role: 'radiogroup', 'aria-labelledby': 'branch-label' },
-          DEF.branches.map(function (b) {
+          state.branches.map(function (b) {
             var on = state.branch === b;
             return h('button', {
               type: 'button', role: 'radio', 'aria-checked': on ? 'true' : 'false', 'data-focus': 'branch-' + b,
@@ -78,21 +100,22 @@ var Views = (function () {
         state.busy ? [spinner(), '확인 중'] : '시작하기')
     ]);
 
-    var mock = APP_CONFIG.MOCK ? h('div', { class: 'mock-banner' }, [
+    var mock = APP_CONFIG.MOCK && !state.preview ? h('div', { class: 'mock-banner' }, [
       h('strong', null, 'MOCK 모드 · '), '실제 서버 없이 이 브라우저 안에서만 동작합니다.', h('br'),
       '테스트 명단: ' + MockServer.hint(), h('br'),
       h('button', { type: 'button', onclick: act.resetMock }, 'MOCK 명부·응답 초기화')
     ]) : null;
 
     return h('div', { class: 'screen' }, [
+      previewBar(state),
       h('header', { class: 'hero' }, [
         wordmark(),
-        h('h1', { text: TITLE }),
+        h('h1', { text: state.def.title }),
         h('div', { class: 'greeting' }, intro.greeting.map(function (p) { return h('p', { text: p }); }))
       ]),
       h('ul', { class: 'intro-card' }, intro.items.map(function (it) {
         return h('li', null, [
-          h('span', { class: 'ico' }, icon(INTRO_ICONS[it.key], 18)),
+          h('span', { class: 'ico' }, icon(introIcon(it), 18)),
           h('div', null, [h('div', { class: 'lbl', text: it.label }), h('div', { class: 'txt', text: fillText(it.text, state.status) })])
         ]);
       })),
@@ -105,8 +128,8 @@ var Views = (function () {
   /* ── 문항 화면 ── */
   function topbar(state, act) {
     var step = state.steps[state.stepIndex];
-    var q = SurveyLogic.findQuestion(step.qid);
-    var total = DEF.questions.length;
+    var q = state.logic.findQuestion(step.qid);
+    var total = state.def.questions.length;
     var num = q.id.replace('Q', '');
     var counter = q.type === 'grid'
       ? h('span', { class: 'counter' }, [h('b', null, q.id), ' · ' + (step.item + 1) + '/' + q.items.length])
@@ -127,7 +150,7 @@ var Views = (function () {
 
   function optionButton(q, opt, i, state, act) {
     var multi = q.type === 'multi';
-    var on = SurveyLogic.isSelected(q, state.answers, opt.value);
+    var on = state.logic.isSelected(q, state.answers, opt.value);
     var parts = multi
       ? [h('span', { class: 'box' }, icon('check', 15, 3)), h('span', { class: 'label', text: opt.label }), h('span', { class: 'hotkey', text: hotkeyLabel(i) })]
       : [h('span', { class: 'key', text: hotkeyLabel(i) }), h('span', { class: 'label', text: opt.label }), h('span', { class: 'tick' }, icon('check', 20, 2.6))];
@@ -139,11 +162,11 @@ var Views = (function () {
   }
 
   function etcInput(q, state, act) {
-    var etc = SurveyLogic.etcOption(q);
-    if (!etc || !SurveyLogic.isSelected(q, state.answers, etc.value)) return null;
-    var key = SurveyLogic.etcKey(q);
+    var etc = state.logic.etcOption(q);
+    if (!etc || !state.logic.isSelected(q, state.answers, etc.value)) return null;
+    var key = state.logic.etcKey(q);
     return h('div', { class: 'etc-wrap' }, h('input', {
-      class: 'text-input', type: 'text', id: 'etc-input', 'data-focus': 'etc', maxlength: DEF.textMaxLength,
+      class: 'text-input', type: 'text', id: 'etc-input', 'data-focus': 'etc', maxlength: state.def.textMaxLength,
       value: state.answers[key] || '', placeholder: '기타 내용을 적어 주세요', 'aria-label': '기타 내용',
       oninput: function (e) { act.setEtc(e.target.value); }
     }));
@@ -151,7 +174,7 @@ var Views = (function () {
 
   // 단일·복수 선택지 목록. 기타 입력란은 '기타' 선택지 바로 아래에 넣는다.
   function optionList(q, state, act) {
-    var etc = SurveyLogic.etcOption(q);
+    var etc = state.logic.etcOption(q);
     var children = [];
     q.options.forEach(function (opt, i) {
       children.push(optionButton(q, opt, i, state, act));
@@ -195,16 +218,17 @@ var Views = (function () {
         h('div', { class: 'item', id: 'grid-item', text: q.items[step.item] }),
         scaleRow(q, cur, act.choose, 'g-')
       ]),
-      h('button', {
+      // '해당 없음'은 설문에 따라 없을 수 있다
+      q.na ? h('button', {
         type: 'button', class: 'na-btn', role: 'radio', 'data-focus': 'g-na',
         'aria-checked': cur === q.na.value ? 'true' : 'false', onclick: function () { act.choose(q.na.value); }
-      }, [q.na.label, h('span', { class: 'hotkey', text: ' · 0' })]),
+      }, [q.na.label, h('span', { class: 'hotkey', text: ' · 0' })]) : null,
       h('div', { class: 'dots', 'aria-hidden': 'true' }, dots)
     ];
   }
 
   function textField(q, state, act) {
-    var max = DEF.textMaxLength;
+    var max = state.def.textMaxLength;
     var val = state.answers[q.id] || '';
     var count = h('div', { class: 'char-count' + (val.length > max ? ' over' : ''), id: 'char-count', 'aria-live': 'polite' },
       val.length.toLocaleString() + ' / ' + max.toLocaleString());
@@ -229,15 +253,15 @@ var Views = (function () {
   function contextChip(q, state) {
     // Q6: 앞에서 고른 어려움(Q5)을 함께 보여준다.
     if (!q.showIf) return null;
-    var src = SurveyLogic.findQuestion(q.showIf.question);
-    var opt = SurveyLogic.findOption(src, state.answers[src.id]);
+    var src = state.logic.findQuestion(q.showIf.question);
+    var opt = state.logic.findOption(src, state.answers[src.id]);
     if (!opt) return null;
-    var text = opt.etc ? (state.answers[SurveyLogic.etcKey(src)] || '기타') : opt.label;
-    return h('div', { class: 'q-context' }, ['고른 어려움 · ', h('b', { text: text })]);
+    var text = opt.etc ? (state.answers[state.logic.etcKey(src)] || '기타') : opt.label;
+    return h('div', { class: 'q-context' }, ['앞에서 고른 답 · ', h('b', { text: text })]);
   }
 
   function footer(q, step, state, act) {
-    var answered = SurveyLogic.checkStep(step, state.answers) === null;
+    var answered = state.logic.checkStep(step, state.answers) === null;
     if (q.type === 'text') {
       var hasText = !!(state.answers[q.id] || '').trim();
       return h('div', { class: 'footer' }, h('button', {
@@ -253,13 +277,13 @@ var Views = (function () {
   }
 
   function isEtcSelected(q, state) {
-    var etc = SurveyLogic.etcOption(q);
-    return !!(etc && SurveyLogic.isSelected(q, state.answers, etc.value));
+    var etc = state.logic.etcOption(q);
+    return !!(etc && state.logic.isSelected(q, state.answers, etc.value));
   }
 
   function question(state, act) {
     var step = state.steps[state.stepIndex];
-    var q = SurveyLogic.findQuestion(step.qid);
+    var q = state.logic.findQuestion(step.qid);
     var content;
     var meta = null;
     if (q.type === 'single' || q.type === 'multi') content = optionList(q, state, act);
@@ -274,9 +298,10 @@ var Views = (function () {
       ? h('p', { class: 'hint', text: '고르면 다음으로 넘어갑니다' }) : null;
 
     return h('div', { class: 'screen' + (state.anim ? ' ' + state.anim : '') }, [
+      previewBar(state),
       topbar(state, act),
       h('main', { class: 'q-body' }, [
-        h('div', { class: 'q-section', text: q.section + '. ' + DEF.sections[q.section] }),
+        h('div', { class: 'q-section', text: q.section + '. ' + state.def.sections[q.section] }),
         h('h2', { class: 'q-title', id: 'q-title', tabindex: '-1', style: q.type === 'grid' ? { fontSize: '17px', fontWeight: '500', color: 'var(--text-2)' } : null }, q.id + '. ' + q.title),
         contextChip(q, state),
         meta,
@@ -293,8 +318,8 @@ var Views = (function () {
     var requiredTotal = 0;
     var optionalTotal = 0;
     var optionalDone = 0;
-    DEF.questions.forEach(function (q) {
-      if (!SurveyLogic.isVisible(q, state.answers)) return;
+    state.def.questions.forEach(function (q) {
+      if (!state.logic.isVisible(q, state.answers)) return;
       if (q.required) requiredTotal++;
       else {
         optionalTotal++;
@@ -302,6 +327,7 @@ var Views = (function () {
       }
     });
     return h('div', { class: 'screen' + (state.anim ? ' ' + state.anim : '') }, [
+      previewBar(state),
       h('main', { class: 'center-body' }, [
         h('div', { class: 'badge-ico' }, [icon('send', 30, 2), h('span', { class: 'spark', 'aria-hidden': 'true' })]),
         h('h2', { id: 'q-title', tabindex: '-1', text: '응답을 제출할까요?' }),
@@ -324,9 +350,10 @@ var Views = (function () {
   /* ── 완료 화면 ── */
   function done(state) {
     // spec 원문 한 문장씩: 첫 문장은 제목, 나머지는 설명
-    var t = fillText(DEF.texts.done, state.status);
+    var t = fillText(state.def.texts.done, state.status);
     var cut = t.indexOf('. ') + 1;
     return h('div', { class: 'screen' }, [
+      previewBar(state),
       h('div', { class: 'done-top' }, wordmark()),
       h('main', { class: 'center-body' }, [
         h('div', { class: 'badge-ico' }, [icon('check', 34, 2.6), h('span', { class: 'spark', 'aria-hidden': 'true' })]),

@@ -19,7 +19,10 @@
     loginError: '',
     busy: false,
     tab: 'overview',
-    role: 'all',
+    group: 'all',          // 결과 분석 그룹 필터 (회차 정의의 analysis.groupBy)
+    rounds: null,          // 회차 목록 (결과 회차 선택용)
+    resultRound: null,     // 결과를 보고 있는 회차
+    stats: null,           // createSurveyStats(그 회차 정의)
     overview: null,
     columns: null,
     rows: null,
@@ -29,7 +32,8 @@
     resetting: null,
     toggling: false,
     excelBusy: false,
-    error: ''
+    error: '',
+    ed: AdminEditor.newState()   // [설문 편집] 상태 (editor.js)
   };
 
   function store(key, val) {
@@ -92,14 +96,32 @@
     });
   }
 
-  function loadResponses() {
-    return call('adminResponses').then(function (res) {
+  // 회차 응답 원본과 그 회차 정의를 받아 집계 준비. roundId가 없으면 진행 중(없으면 가장 최근) 회차.
+  function loadResponses(roundId) {
+    return call('adminResponses', roundId ? { roundId: roundId } : {}).then(function (res) {
       if (!res) return;
       if (!res.ok) { state.error = res.error; return; }
-      if (res.data.version !== SURVEY_DEF.version) state.error = '서버와 화면의 문항 버전이 다릅니다. 새로고침해 주세요.';
+      // 회차가 바뀌면 그룹 필터를 '전체'로 (같은 키라도 회차마다 뜻이 다를 수 있음)
+      if (!state.resultRound || !res.data.round || state.resultRound.id !== res.data.round.id) state.group = 'all';
+      state.resultRound = res.data.round;
+      if (!res.data.definition) {
+        state.stats = null;
+        state.columns = [];
+        state.rows = [];
+        state.responses = [];
+        return;
+      }
+      state.stats = createSurveyStats(res.data.definition);
+      if (state.stats.group(state.group).key !== state.group) state.group = 'all';
       state.columns = res.data.columns;
       state.rows = res.data.rows;
-      state.responses = SurveyStats.parseRows(res.data.columns, res.data.rows);
+      state.responses = state.stats.parseRows(res.data.columns, res.data.rows);
+    });
+  }
+
+  function loadRounds() {
+    return call('adminRounds').then(function (res) {
+      if (res && res.ok) state.rounds = res.data.rounds;
     });
   }
 
@@ -115,7 +137,7 @@
     state.overview = state.responses = null;
     if (state.tab === 'roster') state.roster = null;
     render();
-    var jobs = [loadOverview(), loadResponses()];
+    var jobs = [loadOverview(), loadResponses(state.resultRound ? state.resultRound.id : ''), loadRounds()];
     if (state.tab === 'roster' || state.roster) jobs.push(loadRoster());
     return Promise.all(jobs).then(function () { if (state.screen === 'app') render(); });
   }
@@ -137,7 +159,7 @@
   // 숫자 코드 열(단일 선택·척도·Q4)은 엑셀에서 계산할 수 있게 숫자로 넣는다.
   function numericColumns() {
     var set = {};
-    SURVEY_DEF.questions.forEach(function (q) {
+    state.stats.def.questions.forEach(function (q) {
       if (q.type === 'single' || q.type === 'scale') set[q.id] = true;
       if (q.type === 'grid') q.items.forEach(function (_, i) { set[q.id + '_' + (i + 1)] = true; });
     });
@@ -172,7 +194,9 @@
     },
 
     logout: function () {
-      if (state.token) Api.admin('adminLogout', { token: state.token });
+      if (state.token) Api.admin('adminLogout', { token: state.token, editToken: state.ed.editToken });
+      try { sessionStorage.removeItem('hstc_admin_edit'); } catch (e) { /* 무시 */ }
+      state.ed = AdminEditor.newState();
       toLogin('');
     },
 
@@ -183,9 +207,17 @@
       store(TAB_KEY, k);
       render();
       if (k === 'roster' && !state.roster) loadRoster().then(render);
+      if (k === 'editor') act.ed.enter();
     },
 
-    setRole: function (k) { state.role = k; render(); },
+    setGroup: function (k) { state.group = k; render(); },
+
+    // 결과를 볼 회차 바꾸기
+    selectRound: function (id) {
+      state.responses = null;
+      render();
+      loadResponses(id).then(render);
+    },
 
     setRosterFilter: function (key, v) { state.rosterFilter[key] = v; render(); },
 
@@ -224,7 +256,7 @@
     },
 
     downloadExcel: function () {
-      if (state.excelBusy || !state.rows) return;
+      if (state.excelBusy || !state.rows || !state.stats) return;
       state.excelBusy = true;
       render();
       loadXlsx().then(function (XLSX) {
@@ -236,10 +268,11 @@
         var ws1 = XLSX.utils.aoa_to_sheet(data);
         ws1['!cols'] = state.columns.map(function (c) { return { wch: /^Q1[234]$|_etc$/.test(c) ? 40 : Math.max(8, c.length + 2) }; });
         XLSX.utils.book_append_sheet(wb, ws1, '응답 원본');
-        var ws2 = XLSX.utils.aoa_to_sheet(SurveyLogic.codeTableRows());
+        var ws2 = XLSX.utils.aoa_to_sheet(state.stats.logic.codeTableRows());
         ws2['!cols'] = [{ wch: 10 }, { wch: 60 }, { wch: 10 }, { wch: 40 }];
         XLSX.utils.book_append_sheet(wb, ws2, '문항 코드표');
-        XLSX.writeFile(wb, 'HSTC_업무환경설문_응답_' + stamp() + '.xlsx');
+        var rid = state.resultRound ? state.resultRound.id : '';
+        XLSX.writeFile(wb, 'HSTC_설문_' + rid + '_응답_' + stamp() + '.xlsx');
         state.excelBusy = false;
         render();
       }).catch(function () {
@@ -255,6 +288,15 @@
     }
   };
 
+  // [설문 편집] 동작 (editor.js)
+  act.ed = AdminEditor.createActions({
+    state: state,
+    render: render,
+    call: call,
+    toast: toast,
+    reloadOverview: function () { Promise.all([loadOverview(), loadRounds()]).then(render); }
+  });
+
   /* ── 시작 ── */
   var saved = load(TOKEN_KEY);
   var tab = load(TAB_KEY);
@@ -263,6 +305,7 @@
     state.token = saved;
     state.screen = 'app';
     loadAll();
+    if (state.tab === 'editor') act.ed.enter();
   } else {
     render();
   }

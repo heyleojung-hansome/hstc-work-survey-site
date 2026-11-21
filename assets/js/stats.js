@@ -1,22 +1,18 @@
 /*
  * 관리자 화면 집계 — 응답 시트 원본(열 이름 + 문자열 행)을 읽어 문항별로 센다.
+ * createSurveyStats(def): 회차 정의에 맞춘 집계 묶음. 어떤 문항 구성이든 형식(type)에 따라 센다.
  * DOM 없이 순수 함수만 둔다(Node 테스트용). 개인을 특정하는 값은 다루지 않는다.
+ *
+ * 그룹: 정의의 analysis.groupBy(단일 선택 문항)의 선택지마다 한 그룹. 'all'은 전체.
+ * 작은 집단 보호: 그룹 응답이 MIN_GROUP(3)명 미만이면 화면에서 그 그룹 결과를 숨긴다(사용자 결정 2026-11-21).
  */
-var SurveyStats = (function () {
-  function getDef() {
-    if (typeof SURVEY_DEF !== 'undefined') return SURVEY_DEF;
-    return require('./questions.js');
-  }
-  function getLogic() {
-    if (typeof SurveyLogic !== 'undefined') return SurveyLogic;
-    return require('./logic.js');
-  }
+// 브라우저에서는 logic.js가 먼저 불려 전역 createSurveyLogic이 있고, Node에서는 require로 가져온다
+var statsLogicFactory_ = typeof createSurveyLogic !== 'undefined' ? createSurveyLogic : require('./logic.js').createSurveyLogic;
 
-  var ROLES = {
-    all: { label: '전체', value: null },
-    sales: { label: '영업직', value: 1 },
-    support: { label: '관리·지원직', value: 2 }
-  };
+function createSurveyStats(def) {
+  var L = statsLogicFactory_(def);
+  var MIN_GROUP = 3;
+  var analysis = def.analysis || {};
 
   function num(v) {
     if (v === '' || v === null || v === undefined) return null;
@@ -31,10 +27,9 @@ var SurveyStats = (function () {
   function parseRows(columns, rows) {
     var idx = {};
     columns.forEach(function (c, i) { idx[c] = i; });
-    var L = getLogic();
     return rows.map(function (r) {
       var a = { id: r[idx['응답ID']] || '', date: r[idx['제출일']] || '' };
-      getDef().questions.forEach(function (q) {
+      def.questions.forEach(function (q) {
         if (q.type === 'grid') {
           a[q.id] = q.items.map(function (_, i) { return num(r[idx[q.id + '_' + (i + 1)]]); });
         } else if (q.type === 'multi') {
@@ -51,11 +46,34 @@ var SurveyStats = (function () {
     });
   }
 
-  function filterByRole(list, role) {
-    var r = ROLES[role] || ROLES.all;
-    if (r.value === null) return list;
-    return list.filter(function (a) { return a.Q1 === r.value; });
+  /* ── 그룹 ── */
+
+  var groupQ = analysis.groupBy ? L.findQuestion(analysis.groupBy) : null;
+  if (groupQ && groupQ.type !== 'single') groupQ = null;
+
+  // [{ key: 'all', label: '전체' }, { key: 'g1', label: '영업직', value: 1 }, ...]
+  var GROUPS = [{ key: 'all', label: '전체', short: '전체', value: null }].concat(groupQ ? groupQ.options.map(function (o) {
+    // 화면용 짧은 이름: 끝의 괄호 설명은 뺀다 ('관리·지원직 (지점 관리직, 운영팀)' → '관리·지원직')
+    return { key: 'g' + o.value, label: o.label, short: o.label.replace(/\s*\([^)]*\)\s*$/, '') || o.label, value: o.value };
+  }) : []);
+
+  function group(key) {
+    for (var i = 0; i < GROUPS.length; i++) if (GROUPS[i].key === key) return GROUPS[i];
+    return GROUPS[0];
   }
+
+  function filterByGroup(list, key) {
+    var g = group(key);
+    if (g.value === null || !groupQ) return list;
+    return list.filter(function (a) { return a[groupQ.id] === g.value; });
+  }
+
+  // 그룹 인원이 적어 결과를 숨겨야 하는지 (전체는 숨기지 않음)
+  function isHidden(key, n) {
+    return key !== 'all' && n < MIN_GROUP;
+  }
+
+  /* ── 문항별 집계 ── */
 
   function emptyCounts(q) {
     var c = {};
@@ -65,7 +83,7 @@ var SurveyStats = (function () {
 
   // 단일 선택: { n(응답한 사람), counts{코드: 인원} }
   function single(list, qid) {
-    var q = getLogic().findQuestion(qid);
+    var q = L.findQuestion(qid);
     var counts = emptyCounts(q);
     var n = 0;
     list.forEach(function (a) {
@@ -76,9 +94,9 @@ var SurveyStats = (function () {
     return { n: n, counts: counts };
   }
 
-  // 5점 척도: { n, mean, counts{1..5} }
+  // 척도: { n, mean, counts{min..max} }
   function scale(list, qid) {
-    var q = getLogic().findQuestion(qid);
+    var q = L.findQuestion(qid);
     var counts = {};
     for (var v = q.min; v <= q.max; v++) counts[v] = 0;
     var n = 0;
@@ -95,7 +113,7 @@ var SurveyStats = (function () {
 
   // 복수 선택: { n(이 문항에 답한 사람), counts{코드: 고른 사람 수} }
   function multi(list, qid) {
-    var q = getLogic().findQuestion(qid);
+    var q = L.findQuestion(qid);
     var counts = emptyCounts(q);
     var n = 0;
     list.forEach(function (a) {
@@ -107,11 +125,19 @@ var SurveyStats = (function () {
     return { n: n, counts: counts };
   }
 
+  // 높은 점수 기준: 분석 설정값, 없으면 최고점에서 두 칸(1~5점이면 4점 이상)
+  function highThreshold(q) {
+    var t = analysis.highThreshold;
+    if (typeof t === 'number' && t >= q.min && t <= q.max) return t;
+    return Math.max(q.min, q.max - 1);
+  }
+
   /*
-   * Q4 항목별: { index, label, n(해당 있음 응답 수), mean('해당 없음' 제외), high(4~5점 인원), na(해당 없음) }
+   * 항목별 점수: [{ index, label, n(해당 있음 응답 수), mean('해당 없음' 제외), high(높은 점수 인원), na }]
    */
   function grid(list, qid) {
-    var q = getLogic().findQuestion(qid);
+    var q = L.findQuestion(qid);
+    var th = highThreshold(q);
     return q.items.map(function (label, i) {
       var n = 0;
       var sum = 0;
@@ -120,38 +146,39 @@ var SurveyStats = (function () {
       list.forEach(function (a) {
         var x = Array.isArray(a[qid]) ? a[qid][i] : null;
         if (x === null || x === undefined) return;
-        if (x === q.na.value) { na++; return; }
+        if (q.na && x === q.na.value) { na++; return; }
         n++;
         sum += x;
-        if (x >= 4) high++;
+        if (x >= th) high++;
       });
       return { index: i, label: label, n: n, mean: n ? sum / n : null, high: high, na: na };
     });
   }
 
   /*
-   * Q5 × Q6 교차표: 가장 큰 어려움(Q5)별로 원인(Q6)을 고른 인원.
-   * 반환: { rows: [{ value, label, n, counts{Q6코드: 인원} }], none(특별한 어려움 없음 인원) }
-   * 응답이 있는 Q5 항목만, 인원 많은 순.
+   * 교차표: 행 문항(단일 선택)의 답별로 열 문항(단일·복수 선택)을 고른 인원.
+   * 반환: { rows: [{ value, label, n, counts{열코드: 인원} }], none(행에서 '없음 표시' 선택지 인원), noneLabel }
+   * 응답이 있는 행만, 인원 많은 순. '없음 표시' 선택지는 열 문항을 건너뛰므로 따로 센다.
    */
   function cross(list, rowQid, colQid) {
-    var L = getLogic();
     var rq = L.findQuestion(rowQid);
     var cq = L.findQuestion(colQid);
     var rows = [];
     var none = 0;
+    var noneLabel = '';
     rq.options.forEach(function (o) {
       var members = list.filter(function (a) { return a[rowQid] === o.value; });
       if (!members.length) return;
-      if (o.none) { none = members.length; return; }
+      if (o.none) { none += members.length; noneLabel = noneLabel ? noneLabel + ', ' + o.label : o.label; return; }
       var counts = emptyCounts(cq);
       members.forEach(function (a) {
-        (a[colQid] || []).forEach(function (x) { if (counts[x] !== undefined) counts[x]++; });
+        var v = a[colQid];
+        (Array.isArray(v) ? v : (v === null || v === undefined ? [] : [v])).forEach(function (x) { if (counts[x] !== undefined) counts[x]++; });
       });
       rows.push({ value: o.value, label: o.label, n: members.length, counts: counts });
     });
     rows.sort(function (a, b) { return b.n - a.n || a.value - b.value; });
-    return { rows: rows, none: none };
+    return { rows: rows, none: none, noneLabel: noneLabel };
   }
 
   // 날짜별 응답 수 (오래된 날짜부터)
@@ -166,24 +193,27 @@ var SurveyStats = (function () {
     return list.map(function (a) { return String(a[key] || '').trim(); }).filter(Boolean);
   }
 
-  function pct(m, n) { return n ? Math.round((m / n) * 100) : 0; }
-
-  function fmtMean(x) { return x === null || x === undefined ? '-' : (Math.round(x * 100) / 100).toFixed(2); }
-
   return {
-    ROLES: ROLES,
+    def: def,
+    logic: L,
+    MIN_GROUP: MIN_GROUP,
+    GROUPS: GROUPS,
+    groupQuestion: groupQ,
+    group: group,
+    filterByGroup: filterByGroup,
+    isHidden: isHidden,
     parseRows: parseRows,
-    filterByRole: filterByRole,
     single: single,
     scale: scale,
     multi: multi,
     grid: grid,
+    highThreshold: highThreshold,
     cross: cross,
     byDate: byDate,
     texts: texts,
-    pct: pct,
-    fmtMean: fmtMean
+    pct: function (m, n) { return n ? Math.round((m / n) * 100) : 0; },
+    fmtMean: function (x) { return x === null || x === undefined ? '-' : (Math.round(x * 100) / 100).toFixed(2); }
   };
-})();
+}
 
-if (typeof module !== 'undefined' && module.exports) module.exports = SurveyStats;
+if (typeof module !== 'undefined' && module.exports) module.exports = createSurveyStats;

@@ -27,6 +27,14 @@
 .wordmark { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; letter-spacing: .01em; }
 .wordmark .spark { width: 8px; height: 8px; background: var(--hs-green); transform: rotate(45deg); border-radius: 1.5px; }
 
+/* 미리보기 띠 (편집기에서 연 화면) */
+.preview-bar {
+  position: sticky; top: 0; z-index: 20; display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px 12px; background: var(--orange-tint); color: var(--orange-ink); border-bottom: 1px solid var(--orange-line);
+  font-size: 13px; font-weight: 700;
+}
+.preview-bar svg { color: var(--hs-orange); }
+
 /* ── 시작 화면 ── */
 .hero { background: var(--hs-blue); color: #fff; padding: 22px 22px 46px; }
 .hero h1 { margin-top: 34px; font-size: 27px; line-height: 1.35; font-weight: 700; letter-spacing: -0.03em; }

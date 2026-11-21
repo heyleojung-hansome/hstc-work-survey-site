@@ -56,8 +56,8 @@ var AdminViews = (function () {
   function login(state, act) {
     return h('div', { class: 'login-wrap' }, h('div', { class: 'login-card' }, [
       wordmark(),
-      h('h1', { text: '설문 관리자' }),
-      h('p', { text: '업무환경·프로세스 개선 설문 결과와 참여 현황을 봅니다.' }),
+      h('h1', { text: '사내 설문조사 운영 시스템' }),
+      h('p', { text: '설문 결과와 참여 현황을 확인하고, 설문을 만들고 운영합니다.' }),
       h('form', { onsubmit: function (e) { e.preventDefault(); act.login(); } }, [
         h('label', { class: 'field-label', for: 'pw' }, '관리자 비밀번호'),
         h('input', {
@@ -77,7 +77,7 @@ var AdminViews = (function () {
     return h('div', null, [
       h('header', { class: 'adm-header' }, h('div', { class: 'adm-header-in' }, [
         wordmark(),
-        h('span', { class: 'title', text: '업무환경 설문 관리' }),
+        h('span', { class: 'title', text: '사내 설문조사 운영 시스템' }),
         h('span', { class: 'spacer' }),
         h('button', { type: 'button', class: 'hdr-btn', onclick: act.refresh }, '새로고침'),
         h('button', { type: 'button', class: 'hdr-btn', onclick: act.logout }, '로그아웃')
